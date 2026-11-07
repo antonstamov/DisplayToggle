@@ -1,0 +1,9 @@
+# runtime state - local only, never commit
+toggle.log
+toggle-*.lock
+display-modes.txt
+# shortcut is generated locally by Install.bat
+*.lnk
+# Windows
+Thumbs.db
+Desktop.ini
