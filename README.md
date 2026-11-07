@@ -5,7 +5,7 @@ No third-party tools, no install — just a shortcut that toggles.
 
 ## How it works
 
-`Monitor-Toggle.lnk` → `Toggle-Primary-Silent.vbs` → `Toggle-Primary-Modern.ps1`,
+`Monitor-Toggle.lnk` → `Toggle-Primary-Silent.vbs` → `Toggle-Primary.ps1`,
 which uses the modern display API (`QueryDisplayConfig` / `SetDisplayConfig`):
 
 - Only **source positions** are shifted; source/target modes (resolution,
@@ -52,7 +52,7 @@ fight each other and looked like a "double toggle").
 - `display-modes.txt` — journal of last seen modes per display, written by
   every successful run. Used to restore the exact mode when re-enabling a
   disabled display. Local state, do not commit.
-- `$PreferFreq` at the top of `Toggle-Primary-Modern.ps1` — preferred
+- `$PreferFreq` at the top of `Toggle-Primary.ps1` — preferred
   refresh rate (Hz) when a detached display has no stored mode
   (default `60`).
 
@@ -72,7 +72,7 @@ fight each other and looked like a "double toggle").
 | `Install.bat` | Creates `Monitor-Toggle.lnk` (run once) |
 | `Monitor-Toggle.lnk` | Entry point (generated locally, not committed) |
 | `Toggle-Primary-Silent.vbs` | Launches the toggle windowless |
-| `Toggle-Primary-Modern.ps1` | The toggle (DisplayConfig API) |
+| `Toggle-Primary.ps1` | The toggle (DisplayConfig API) |
 | `icon.ico` | Shortcut icon |
 
 ## License

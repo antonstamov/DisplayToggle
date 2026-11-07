@@ -1,12 +1,11 @@
 # Переключение основного дисплея через современный API DisplayConfig.
 #
-# ПОЧЕМУ НЕ MMT: MultiMonitorTool меняет primary через старый API
-# ChangeDisplaySettingsEx. Любая такая операция переприменяет сохранённый
-# в реестре режим дисплея (legacy-хранилище), а выбранный вручную в
-# «Параметры» режим (например 60 Гц вместо 59,95) в это хранилище не
-# попадает — поэтому после переключения частота откатывалась и начиналось
-# моргание. Современный API (SetDisplayConfig) принимает source-режимы
-# как есть, поэтому тайминг не затрагивается физически.
+# ПОЧЕМУ НЕ LEGACY API: смена primary через ChangeDisplaySettingsEx
+# переприменяет сохранённый в реестре режим дисплея (legacy-хранилище),
+# а выбранный вручную в «Параметры» режим (например 60 Гц вместо 59,95)
+# в это хранилище не попадает — поэтому после переключения частота
+# откатывалась и начиналось моргание. Современный API (SetDisplayConfig)
+# принимает source-режимы как есть, поэтому тайминг не затрагивается физически.
 #
 # Логика выбора цели сохранена (1 экран — ничего, 2 — другой, 3+ — по кругу),
 # но список экранов берётся из активных путей DisplayConfig, а не из
@@ -36,7 +35,6 @@ using System.Text;
 public class DisplayToggle
 {
     const uint QDC_ONLY_ACTIVE_PATHS  = 0x00000002;
-    const uint QDC_DATABASE_CURRENT = 0x00000004;
     const uint QDC_VIRTUAL_MODE_AWARE = 0x00000010;
 
     // флаги SetDisplayConfig (набор SDC_*, не QDC_*)
@@ -61,12 +59,8 @@ public class DisplayToggle
         public DIH header;
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst=32)] public string viewGdiDeviceName;
     }
-    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public struct TARGET_NAME {
-        public DIH header; public uint flags;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst=32)] public string outputDeviceName;
-    }
 
-    // --- включение выключенного дисплея штатными средствами (без MMT) ---
+    // --- включение выключенного дисплея штатными средствами user32 ---
     [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public struct DISPLAY_DEVICE {
         public int cb;
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst=32)] public string DeviceName;
@@ -190,7 +184,6 @@ public class DisplayToggle
         DEVMODE_EN dm = new DEVMODE_EN();
         dm.dmSize = (short)Marshal.SizeOf(dm);
         dm.dmPelsWidth = w; dm.dmPelsHeight = h; dm.dmDisplayFrequency = freq;
-        dm.dmBitsPerPel = 32;
         dm.dmPositionX = posX; dm.dmPositionY = posY;
         if (freq > 0)
         {
@@ -215,7 +208,7 @@ public class DisplayToggle
 
     // Включает первый выключенный (detached) дисплей расширением в (posX,posY).
     // Режим: наш журнал (точный "как было") -> legacy-реестр -> лучший из перебора.
-    // activeCsv — имена уже активных GDI (их пропускаем). Без MMT.
+    // activeCsv — имена уже активных GDI (их пропускаем).
     // Возвращает true + имя в enabledName, если attach удался.
     public static bool EnableFirstDetached(int posX, int posY, StringBuilder log, string activeCsv, string journalFile, int preferFreq, out string enabledName)
     {
@@ -262,20 +255,15 @@ public class DisplayToggle
     [DllImport("user32.dll")] static extern int QueryDisplayConfig(uint flags, ref uint np, IntPtr p, ref uint nm, IntPtr m, IntPtr topo);
     [DllImport("user32.dll")] static extern int SetDisplayConfig(uint np, IntPtr p, uint nm, IntPtr m, uint flags);
     [DllImport("user32.dll", EntryPoint="DisplayConfigGetDeviceInfo")] static extern int GetSourceName(ref SOURCE_NAME r);
-    [DllImport("user32.dll", EntryPoint="DisplayConfigGetDeviceInfo")] static extern int GetTargetName(ref TARGET_NAME r);
 
     public class ScreenInfo
     {
-        public int  PathIndex;
         public uint TargetId;
         public string GdiName = "";
-        public string TargetName = "";
         public int  X, Y;          // позиция источника в виртуальном рабочем столе
         public int  W, H;          // разрешение источника
         public int  ModeOffset = -1;
-        public int  TargetOffset = -1;
         public bool IsPrimary;
-        public string SrcModeHex = "";
         public string TgtModeHex = "";
     }
 
@@ -289,28 +277,19 @@ public class DisplayToggle
         public int QueryRc;
     }
 
-    static string Rat(uint num, uint den)
-    {
-        if (den == 0) return "?";
-        return ((double)num / den).ToString("0.####");
-    }
-
     // читает активные пути + source-режимы.
-    // qflags: для активных — QDC_ONLY_ACTIVE_PATHS, для последнего
-    // сохранённого состояния — QDC_DATABASE_CURRENT (обе с VIRTUAL_MODE_AWARE).
     public static Snapshot Query(uint qflags)
     {
         Snapshot s = new Snapshot();
-        uint flags = qflags;
         uint pc = 0, mc = 0;
-        int rc = GetDisplayConfigBufferSizes(flags, ref pc, ref mc);
+        int rc = GetDisplayConfigBufferSizes(qflags, ref pc, ref mc);
         if (rc != 0) { s.QueryRc = rc; return s; }
         s.PathBuf = Marshal.AllocHGlobal((int)pc * PATH_SIZE + 1024);
         s.ModeBuf = Marshal.AllocHGlobal((int)mc * MODE_SIZE + 1024);
         uint np = pc, nm = mc;
-        rc = QueryDisplayConfig(flags, ref np, s.PathBuf, ref nm, s.ModeBuf, IntPtr.Zero);
+        rc = QueryDisplayConfig(qflags, ref np, s.PathBuf, ref nm, s.ModeBuf, IntPtr.Zero);
         s.QueryRc = rc;
-        if (rc != 0) return s;
+        if (rc != 0) { FreeSnapshot(s); return s; }
         s.PathCount = np; s.ModeCount = nm;
         s.PathBytes = new byte[np * PATH_SIZE];
         s.ModeBytes = new byte[nm * MODE_SIZE];
@@ -339,23 +318,15 @@ public class DisplayToggle
         {
             int po = (int)i * PATH_SIZE;
             ScreenInfo sc = new ScreenInfo();
-            sc.PathIndex = (int)i;
             sc.TargetId = BitConverter.ToUInt32(s.PathBytes, po + 28);       // targetInfo.id
             uint srcAdapterLow = BitConverter.ToUInt32(s.PathBytes, po + 0);
             uint srcId = BitConverter.ToUInt32(s.PathBytes, po + 8);
-            uint tgtAdapterLow = BitConverter.ToUInt32(s.PathBytes, po + 20);
 
             SOURCE_NAME sn = new SOURCE_NAME();
             sn.header.type = 1; sn.header.size = (uint)Marshal.SizeOf(typeof(SOURCE_NAME));
             sn.header.adapterId = new LUID { LowPart = srcAdapterLow, HighPart = 0 };
             sn.header.id = srcId;
             if (GetSourceName(ref sn) == 0) sc.GdiName = sn.viewGdiDeviceName;
-
-            TARGET_NAME tn = new TARGET_NAME();
-            tn.header.type = 2; tn.header.size = (uint)Marshal.SizeOf(typeof(TARGET_NAME));
-            tn.header.adapterId = new LUID { LowPart = tgtAdapterLow, HighPart = 0 };
-            tn.header.id = sc.TargetId;
-            if (GetTargetName(ref tn) == 0) { sc.TargetName = tn.outputDeviceName; sc.IsPrimary = (tn.flags & 1) != 0; }
 
             int mo, to;
             if (srcOffsetByTarget.TryGetValue(sc.TargetId, out mo))
@@ -366,13 +337,9 @@ public class DisplayToggle
                 sc.H = (int)BitConverter.ToUInt32(s.ModeBytes, u + 4);
                 sc.X = BitConverter.ToInt32(s.ModeBytes, u + SRC_POS);
                 sc.Y = BitConverter.ToInt32(s.ModeBytes, u + SRC_POS + 4);
-                byte[] src = new byte[SRC_SIZE];
-                Array.Copy(s.ModeBytes, u, src, 0, SRC_SIZE);
-                sc.SrcModeHex = BitConverter.ToString(src);
             }
             if (tgtOffsetByTarget.TryGetValue(sc.TargetId, out to))
             {
-                sc.TargetOffset = to;
                 byte[] tgt = new byte[TGT_SIZE];
                 Array.Copy(s.ModeBytes, to + MODE_UNION, tgt, 0, TGT_SIZE);
                 sc.TgtModeHex = BitConverter.ToString(tgt);
@@ -395,6 +362,26 @@ public class DisplayToggle
         return sb.ToString();
     }
 
+    public static void FreeSnapshot(Snapshot s)
+    {
+        try { if (s.PathBuf != IntPtr.Zero) Marshal.FreeHGlobal(s.PathBuf); } catch {}
+        try { if (s.ModeBuf != IntPtr.Zero) Marshal.FreeHGlobal(s.ModeBuf); } catch {}
+        s.PathBuf = IntPtr.Zero; s.ModeBuf = IntPtr.Zero;
+    }
+
+    // уникальные позиции (клоны одного экрана имеют одинаковую позицию)
+    public static List<ScreenInfo> Dedupe(Snapshot s)
+    {
+        List<ScreenInfo> uniq = new List<ScreenInfo>();
+        foreach (ScreenInfo sc in s.Screens)
+        {
+            bool dup = false;
+            foreach (ScreenInfo u in uniq) if (u.X == sc.X && u.Y == sc.Y) { dup = true; break; }
+            if (!dup) uniq.Add(sc);
+        }
+        return uniq;
+    }
+
     // Переключает primary на следующий экран по кругу.
     // Возвращает текст отчёта; ok=false — переключение не выполнено.
     // journalFile — файл журнала последних режимов (точный "как было").
@@ -408,18 +395,12 @@ public class DisplayToggle
         sb.Append(Describe(s));
 
         // уникальные позиции (клоны одного экрана имеют одинаковую позицию)
-        List<ScreenInfo> uniq = new List<ScreenInfo>();
-        foreach (ScreenInfo sc in s.Screens)
-        {
-            bool dup = false;
-            foreach (ScreenInfo u in uniq) if (u.X == sc.X && u.Y == sc.Y) { dup = true; break; }
-            if (!dup) uniq.Add(sc);
-        }
+        List<ScreenInfo> uniq = Dedupe(s);
         if (uniq.Count < 2) {
             sb.AppendLine("only one display position, trying to enable detached");
             // кейс "таргет выключен через ОС": включаем первый detached расширением
-            // справа от текущего десктопа (дубликаты не трогаем, режим — последний
-            // из реестра) и ТУТ ЖЕ переключаем primary на него тем же сдвигом.
+            // справа от текущего десктопа (дубликаты не трогаем) и ТУТ ЖЕ
+            // переключаем primary на него тем же сдвигом.
             int right = 0;
             foreach (ScreenInfo sc in s.Screens) { int e = sc.X + sc.W; if (e > right) right = e; }
             StringBuilder an = new StringBuilder();
@@ -427,21 +408,17 @@ public class DisplayToggle
             string en;
             if (!EnableFirstDetached(right, 0, sb, an.ToString(), journalFile, preferFreq, out en)) {
                 sb.AppendLine("no detached display to enable, nothing to toggle");
+                FreeSnapshot(s);
                 return sb.ToString();
             }
             System.Threading.Thread.Sleep(500);
+            FreeSnapshot(s);
             s = Query(QDC_ONLY_ACTIVE_PATHS | QDC_VIRTUAL_MODE_AWARE);
-            if (s.QueryRc != 0) { sb.AppendLine("re-query failed rc=" + s.QueryRc); return sb.ToString(); }
+            if (s.QueryRc != 0) { sb.AppendLine("re-query failed rc=" + s.QueryRc); FreeSnapshot(s); return sb.ToString(); }
             sb.AppendLine("screens after enable:");
             sb.Append(Describe(s));
-            uniq = new List<ScreenInfo>();
-            foreach (ScreenInfo sc in s.Screens)
-            {
-                bool dup = false;
-                foreach (ScreenInfo u in uniq) if (u.X == sc.X && u.Y == sc.Y) { dup = true; break; }
-                if (!dup) uniq.Add(sc);
-            }
-            if (uniq.Count < 2) { sb.AppendLine("enabled " + en + " but still one position"); return sb.ToString(); }
+            uniq = Dedupe(s);
+            if (uniq.Count < 2) { sb.AppendLine("enabled " + en + " but still one position"); FreeSnapshot(s); return sb.ToString(); }
         }
 
         // primary = та позиция, что в (0,0)
@@ -477,6 +454,7 @@ public class DisplayToggle
             sb.AppendLine("SetDisplayConfig(APPLY+SAVE_TO_DATABASE) rc=" + rc);
         }
         Marshal.FreeHGlobal(mbuf);
+        FreeSnapshot(s);
         if (rc != 0) { sb.AppendLine("switch failed"); return sb.ToString(); }
 
         System.Threading.Thread.Sleep(800);
@@ -505,6 +483,7 @@ public class DisplayToggle
         }
         sb.AppendLine("timing kept: " + timingKept);
         RecordJournal(journalFile, after, sb);
+        FreeSnapshot(after);
         ok = true;
         return sb.ToString();
     }
@@ -516,7 +495,7 @@ public class DisplayToggle
 # блокировка от двойного запуска (отдельный файл, чтобы параллельные
 # запуски с противоположными целями не дёргали primary туда-сюда)
 # --------------------------------------------------------------------------
-$lock = Join-Path $PSScriptRoot "toggle-modern.lock"
+$lock = Join-Path $PSScriptRoot "toggle.lock"
 $canRun = $true
 if (Test-Path $lock) {
   try {
@@ -535,6 +514,9 @@ if (-not $canRun) { exit 0 }
 try { ($PID.ToString() + ";" + (Get-Date).ToString("o")) | Set-Content $lock } catch {}
 function ReleaseLock() { Remove-Item $lock -Force -ErrorAction SilentlyContinue }
 
+# свежий лог на каждый запуск: старые прогоны не храним
+try { Set-Content $log -Value ((Get-Date -Format "yyyy-MM-dd HH:mm:ss") + " --- run ---") } catch {}
+
 $ok = $false
 # Preferred refresh rate (Hz) when a detached display has no stored mode:
 # among modes with max area, pick the one closest to this. 60 = safe default.
@@ -542,11 +524,11 @@ $PreferFreq = 60
 try {
   $journal = Join-Path $PSScriptRoot "display-modes.txt"
   $report = [DisplayToggle]::Switch([ref]$ok, $journal, $PreferFreq)
-  foreach ($line in ($report -split "`r?`n")) { if ($line.Trim()) { Log ("modern: " + $line) } }
-  if ($ok) { Log "modern switch done"; ReleaseLock; exit 0 }
-  Log "modern switch did not succeed"
+  foreach ($line in ($report -split "`r?`n")) { if ($line.Trim()) { Log ("toggle: " + $line) } }
+  if ($ok) { Log "toggle switch done"; ReleaseLock; exit 0 }
+  Log "toggle switch did not succeed"
 } catch {
-  Log ("modern switch exception: " + $_)
+  Log ("toggle switch exception: " + $_)
 }
 
 ReleaseLock
